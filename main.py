@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from functools import wraps
 
 import requests
+from cryptography.fernet import Fernet, InvalidToken
 from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
 
 app = Flask(__name__)
@@ -20,6 +21,7 @@ GITHUB_RX_CSV_PATH = os.environ.get("GITHUB_RX_CSV_PATH", "data/prescriptions.cs
 DOCTOR_PIN = os.environ.get("DOCTOR_PIN", "")
 PHARMACIST_PIN = os.environ.get("PHARMACIST_PIN", "")
 HN_HASH_SECRET = os.environ.get("HN_HASH_SECRET", "")
+PATIENT_DATA_KEY = os.environ.get("PATIENT_DATA_KEY", "")
 ICD10_CSV_PATH = os.environ.get("ICD10_CSV_PATH", "data/icd10.csv")
 
 # ---------- ICD-10 ----------
@@ -303,10 +305,42 @@ def hn_fingerprint(h):
 def new_encounter_id():
     return datetime.now(BKK).strftime("%y%m%d-%H%M%S-") + secrets.token_hex(2).upper()
 
+
+def get_fernet():
+    if not PATIENT_DATA_KEY:
+        raise RuntimeError("PATIENT_DATA_KEY is not configured")
+    try:
+        return Fernet(PATIENT_DATA_KEY.encode("utf-8"))
+    except Exception:
+        raise RuntimeError("PATIENT_DATA_KEY must be a valid Fernet key")
+
+def encrypt_text(value):
+    value = (value or "").strip()
+    if not value:
+        return ""
+    return get_fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+
+def decrypt_text(token):
+    token = (token or "").strip()
+    if not token:
+        return ""
+    try:
+        return get_fernet().decrypt(token.encode("utf-8")).decode("utf-8")
+    except InvalidToken:
+        return "[ถอดรหัสไม่ได้]"
+
+def label_datetime(ts):
+    try:
+        dt = datetime.fromisoformat(ts)
+        return f"{dt.day:02d}/{dt.month:02d}/{dt.year + 543} เวลา {dt.hour:02d}:{dt.minute:02d} น."
+    except Exception:
+        return ts
+
 # ---------- GITHUB ----------
 RX_FIELDS = [
     "encounter_id","timestamp_bkk","hn_hash","hn_fingerprint",
     "keyword","icd10","diagnosis","allergy","current_med",
+    "first_name_enc","last_name_enc","hn_enc",
     "drug_name","sig_raw","sig_th","quantity",
     "rx_status","verified_bkk","dispensed_bkk"
 ]
@@ -411,7 +445,9 @@ def doctor():
     defaults=json.dumps(DEFAULT_SIG,ensure_ascii=False)
     body=f"""
 <div class='card'><h1>แพทย์: HN → ICD-10 → สั่งยา</h1><div class='muted'>HN ไม่บันทึกดิบใน prescription CSV</div></div>
-<div class='card'><h2>1) HN และข้อมูล safety</h2><input id='hn' placeholder='HN'>
+<div class='card'><h2>1) ข้อมูลผู้ป่วยและข้อมูล safety</h2>
+<div class='two'><div><label>ชื่อ</label><input id='first_name' placeholder='ชื่อ'></div><div><label>นามสกุล</label><input id='last_name' placeholder='นามสกุล'></div></div>
+<label>HN</label><input id='hn' placeholder='HN'>
 <div class='two'><textarea id='allergy' placeholder='แพ้ยา (ถ้ามี)'></textarea><textarea id='current_med' placeholder='ยาประจำ/อาหารเสริม (ถ้ามี)'></textarea></div></div>
 <div class='card'><h2>2) Diagnosis keyword</h2><div class='grid'>{buttons}</div><p>เลือกแล้ว: <b id='chosenKeyword'>-</b></p></div>
 <div class='card'><h2>3) ICD-10</h2><input id='icdSearch' placeholder='ค้น ICD-10' oninput='searchICD()'><select id='icdSelect' size='7'></select></div>
@@ -420,7 +456,7 @@ def doctor():
 <label>SIG shorthand</label><input id='sigRaw' placeholder='เช่น 1 tab tid pc'>
 <button type='button' class='secondary' onclick='previewSig()'>แปล SIG</button><div id='sigPreview' class='muted'></div><br>
 <button type='button' onclick='addDrug()'>+ เพิ่มยา</button><div id='rxList'></div></div>
-<div class='card'><h2>5) Confirm</h2><label><input id='confirm' type='checkbox' style='width:auto'> แพทย์ตรวจสอบ HN, ICD-10, allergy/current meds, รายการยา และฉลากแล้ว</label><br><br>
+<div class='card'><h2>5) Confirm</h2><label><input id='confirm' type='checkbox' style='width:auto'> แพทย์ตรวจสอบชื่อ-นามสกุล, HN, ICD-10, allergy/current meds, รายการยา และฉลากแล้ว</label><br><br>
 <button class='good' type='button' onclick='saveEncounter()'>Confirm & Send to Pharmacy</button><p id='saveStatus'></p></div>
 <div class='card'><a class='btn secondary' href='/logout'>ออกจากระบบ</a></div>
 <script>
@@ -456,8 +492,9 @@ def api_translate_sig():
 @require_role("doctor")
 def save_encounter():
     j=request.get_json(force=True)
-    hn=normalize_hn(j.get("hn",""));kw=j.get("keyword","");icd10=(j.get("icd10") or "").strip().upper()
+    first_name=(j.get("first_name") or "").strip();last_name=(j.get("last_name") or "").strip();hn=normalize_hn(j.get("hn",""));kw=j.get("keyword","");icd10=(j.get("icd10") or "").strip().upper()
     allergy=(j.get("allergy") or "").strip();current_med=(j.get("current_med") or "").strip();rx_items=j.get("rx_items") or []
+    if not first_name or not last_name:return jsonify(error="กรุณาระบุชื่อและนามสกุล"),400
     if not hn:return jsonify(error="HN ว่าง"),400
     if kw not in KEYWORD_HINTS:return jsonify(error="Keyword ไม่ถูกต้อง"),400
     item=icd_lookup_exact(icd10)
@@ -467,13 +504,17 @@ def save_encounter():
     except Exception as e:return jsonify(error=str(e)),500
 
     enc=new_encounter_id();ts=datetime.now(BKK).isoformat(timespec="seconds");clean=[];med_names=[]
+    try:
+        first_name_enc=encrypt_text(first_name);last_name_enc=encrypt_text(last_name);hn_enc=encrypt_text(hn)
+    except Exception as e:
+        return jsonify(error=str(e)),500
     for rx in rx_items:
         drug=find_med_in_stock(rx.get("drug_name",""))
         if not drug:return jsonify(error=f"ไม่พบยาใน stock: {rx.get('drug_name','')}"),400
         sig_raw=(rx.get("sig_raw") or "").strip();sig_th,_=translate_sig(sig_raw);qty=re.sub(r"[^0-9.]", "", str(rx.get("quantity","")))
         if not sig_th or not qty:return jsonify(error=f"ข้อมูลยาไม่ครบ: {drug}"),400
         med_names.append(drug)
-        clean.append({"encounter_id":enc,"timestamp_bkk":ts,"hn_hash":h,"hn_fingerprint":hn_fingerprint(h),"keyword":kw,"icd10":icd10,"diagnosis":item["title"],"allergy":allergy,"current_med":current_med,"drug_name":drug,"sig_raw":sig_raw,"sig_th":sig_th,"quantity":qty,"rx_status":"รอจัดยา","verified_bkk":"","dispensed_bkk":""})
+        clean.append({"encounter_id":enc,"timestamp_bkk":ts,"hn_hash":h,"hn_fingerprint":hn_fingerprint(h),"keyword":kw,"icd10":icd10,"diagnosis":item["title"],"allergy":allergy,"current_med":current_med,"first_name_enc":first_name_enc,"last_name_enc":last_name_enc,"hn_enc":hn_enc,"drug_name":drug,"sig_raw":sig_raw,"sig_th":sig_th,"quantity":qty,"rx_status":"รอจัดยา","verified_bkk":"","dispensed_bkk":""})
 
     def add_rows(rows):return rows+clean
     try:mutate_csv_with_retry(GITHUB_RX_CSV_PATH,RX_FIELDS,add_rows,f"Add prescription {enc} {ts}")
@@ -503,6 +544,12 @@ def pharmacy():
     cards=[]
     for enc,items in sorted(groups.items(),key=lambda kv:kv[1][0].get("timestamp_bkk",""),reverse=True):
         first=items[0];med_names=[x.get("drug_name","") for x in items]
+        try:
+            patient_first=decrypt_text(first.get("first_name_enc",""))
+            patient_last=decrypt_text(first.get("last_name_enc",""))
+            patient_hn=decrypt_text(first.get("hn_enc",""))
+        except Exception:
+            patient_first=patient_last=patient_hn="[ถอดรหัสไม่ได้]"
         alerts=allergy_and_interaction_alerts(med_names,first.get("allergy",""),first.get("current_med",""))
         alert_html="".join([f"<div class='danger'><b>⚠ {html.escape(a)}</b></div>" for a in alerts])
         if first.get("allergy","").strip():alert_html+=f"<div class='warn'><b>แพ้ยา:</b> {html.escape(first.get('allergy',''))}</div>"
@@ -511,7 +558,7 @@ def pharmacy():
         rows_html="";labels_html=""
         for i,x in enumerate(items,1):
             rows_html+=f"<tr><td>{html.escape(x.get('drug_name',''))}</td><td>{html.escape(x.get('sig_raw',''))}</td><td>{html.escape(x.get('sig_th',''))}</td><td>{html.escape(x.get('quantity',''))}</td></tr>"
-            label=f"สถานพยาบาล มก. กำแพงแสน\\nHN hash: {first.get('hn_fingerprint','')}\\nวันที่สั่งยา: {first.get('timestamp_bkk','')}\\nยา: {x.get('drug_name','')}\\nจำนวน: {x.get('quantity','')}\\nวิธีใช้: {x.get('sig_th','')}"
+            label=f"สถานพยาบาล มก. กำแพงแสน\\nชื่อ: {patient_first} {patient_last}\\nHN: {patient_hn}\\nวันที่สั่งยา: {label_datetime(first.get('timestamp_bkk',''))}\\nยา: {x.get('drug_name','')}\\nจำนวน: {x.get('quantity','')}\\nวิธีใช้: {x.get('sig_th','')}"
             safe=html.escape(label).replace("\\n","<br>");uid=str(uuid.uuid4()).replace("-","")
             labels_html+=f"""<details><summary>ป้ายยา {i}: {html.escape(x.get('drug_name',''))}</summary>
 <div id='label_{uid}' class='label'>{safe}</div>
@@ -527,7 +574,7 @@ def pharmacy():
             action="<span class='ok'><b>จ่ายยาแล้ว</b></span>"
 
         cards.append(f"""<div class='card'><h2>{first.get('timestamp_bkk','')} | HN {first.get('hn_fingerprint','')} | {status}</h2>
-<div><b>{first.get('icd10','')}</b> — {html.escape(first.get('diagnosis',''))}</div>{alert_html}
+<div><b>{first.get('icd10','')}</b> — {html.escape(first.get('diagnosis',''))}</div><div class='muted'><b>ผู้ป่วย:</b> {html.escape(patient_first)} {html.escape(patient_last)} | <b>HN:</b> {html.escape(patient_hn)}</div>{alert_html}
 <div class='scroll'><table><thead><tr><th>ยา</th><th>SIG แพทย์</th><th>ฉลากไทย</th><th>จำนวน</th></tr></thead><tbody>{rows_html}</tbody></table></div>
 <h3>ป้ายยา</h3>{labels_html}
 <p class='warn'><b>หากไม่เห็นด้วยกับคำสั่งยา กรุณาเดินมาปรึกษาแพทย์โดยตรง</b><br>ไม่มีการ Reject/Send back/แก้คำสั่งแพทย์ผ่านระบบ</p>{action}</div>""")
