@@ -1,0 +1,2 @@
+encounter_id,timestamp_bkk,hn_hash,hn_fingerprint,keyword,icd10,diagnosis,allergy,current_med,drug_name,sig_raw,sig_th,quantity,rx_status,verified_bkk,dispensed_bkk
+260826-084545-3B07,2026-08-26T08:45:45+07:00,963be0a4a706d43bcec114a86e8d7ec345311a7d73b522e0f1b021687898b979,963B-E0A4,pharyngitis,J00,Acute nasopharyngitis [common cold],,,Amoxicillin 500 mg,qid,วันละ 4 ครั้ง,10,รอจัดยา,,
