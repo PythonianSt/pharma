@@ -1,4 +1,1 @@
 encounter_id,timestamp_bkk,hn_hash,hn_fingerprint,keyword,icd10,diagnosis,allergy,current_med,drug_name,sig_raw,sig_th,quantity,rx_status,verified_bkk,dispensed_bkk
-260826-084545-3B07,2026-08-26T08:45:45+07:00,963be0a4a706d43bcec114a86e8d7ec345311a7d73b522e0f1b021687898b979,963B-E0A4,pharyngitis,J00,Acute nasopharyngitis [common cold],,,Amoxicillin 500 mg,qid,วันละ 4 ครั้ง,10,จัดยาแล้ว,2026-08-26T08:46:38+07:00,
-260826-133150-4871,2026-08-26T13:31:50+07:00,77415dbcb857c6f2ca698d52049fe846a32f08963130b0dac8f9e78294c835fb,7741-5DBC,tonsillitis,J03.9,"Acute tonsillitis, unspecified",-,-,Amoxicillin + clavulanate 1 g,bid pc,วันละ 2 ครั้ง หลังอาหารเช้า เย็น,10,รอจัดยา,,
-260826-133151-6669,2026-08-26T13:31:51+07:00,77415dbcb857c6f2ca698d52049fe846a32f08963130b0dac8f9e78294c835fb,7741-5DBC,tonsillitis,J03.9,"Acute tonsillitis, unspecified",-,-,Amoxicillin + clavulanate 1 g,bid pc,วันละ 2 ครั้ง หลังอาหารเช้า เย็น,10,รอจัดยา,,
